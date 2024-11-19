@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+</head>
+
+<body>
+  <div>
+    <button type="button" id="start-stream-test">Test streaming data</button>
+  </div>
+  <div>
+    <p>Progress: <span id="progress-value">not started</span></p>
+  </div>
+  <script>
+    const progressText = document.getElementById("progress-value");
+
+    const btn = document.getElementById("start-stream-test");
+    btn.addEventListener("click", async () => {
+      const res = await fetch("http://localhost:6969/test-stream");
+      console.log("Response:", res);
+
+      const decoder = new TextDecoder();
+
+      for await (const chunk of res.body) {
+        // console.log("Buffer:", chunk);
+        const str = decoder.decode(chunk);
+        console.log("Chunk:", str);
+        for (const row of str.split("\n").map(row => row.trim()).filter(Boolean)) {
+          console.log("Row:", row);
+          try {
+            const data = JSON.parse(row);
+            if ("state" in data) {
+              console.log("State:", data.state);
+            }
+            if ("totalCount" in data) {
+              console.log("Total count:", data.totalCount);
+            }
+            if ("progress" in data) {
+              console.log("progress:", data.progress);
+              progressText.textContent = data.progress;
+            }
+            if ("done" in data) {
+              if (data.done === true) {
+                console.log("DONE!");
+              }
+            }
+          } catch (err) {
+            console.log("Failed to parse json data..", err);
+            return;
+          }
+        }
+      }
+    });
+
+  </script>
+</body>
+
+</html>
