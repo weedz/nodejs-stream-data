@@ -1,7 +1,7 @@
 import EventEmitter from "node:events";
 import * as fs from "node:fs";
 
-import fastify from "fastify";
+import fastify, { FastifyReply } from "fastify";
 import { PassThrough } from "node:stream";
 
 const app = fastify();
@@ -9,6 +9,7 @@ const app = fastify();
 type Task = {
   emitter: EventEmitter;
   totalCount: number;
+  progress: number;
   state: 1 | 2 | 3;
 };
 const tasks: Record<string, Readonly<Task>> = {};
@@ -20,31 +21,33 @@ async function testStream(taskName: string) {
       .fill(0)
       .map((_, idx) => idx);
     for (const item of data) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       yield item;
     }
   }
 
   const emitter = new EventEmitter();
-  const data: Task = {
+  const task: Task = {
     emitter,
     totalCount: 0,
+    progress: 0,
     state: 1,
   };
-  tasks[taskName] = data;
+  tasks[taskName] = task;
 
   await new Promise((resolve) => setTimeout(resolve, 1000));
 
-  data.totalCount = totalCount;
+  task.totalCount = totalCount;
   emitter.emit("total_count", totalCount);
 
   for await (const data of getData()) {
-    console.log("Data:", data);
+    console.log(`[${taskName}] Data:`, data);
+    ++task.progress;
     emitter.emit("progress", data);
   }
 
-  console.log("DONE!");
-  data.state = 2;
+  console.log(`[${taskName}] DONE!`);
+  task.state = 2;
   emitter.emit("done");
   // TODO: Delete immediately or after some time to
   // prevent running the same task to frequently
@@ -63,18 +66,16 @@ app.get("/", async (_req, resp) => {
   return resp.send(index);
 });
 
-app.get("/test-stream", async (_req, reply) => {
-  console.log("Existing streams:", tasks);
-  const opName = "foo"; // we can make this from something like sha256_b64([arg1, arg2, ...].join())
-  const task = setupEmitter(opName);
-  console.log("Task:", task);
+app.get("/active-streams", async (_req, reply) => {
+  return reply.send(Object.keys(tasks).map(task => ({
+    task,
+    state: tasks[task].state,
+    totalCount: tasks[task].totalCount,
+    progress: tasks[task].progress,
+  })));
+});
 
-  reply.header("transfer-encoding", "chunked");
-  reply.header("content-type", "application/jsonl+json");
-
-  const stream = new PassThrough({ highWaterMark: 128 });
-  reply.send(stream);
-
+function attachToStream(task: Task, stream: PassThrough, reply: FastifyReply) {
   function onTotalCount(totalCount: number) {
     stream.write(`{"totalCount":${totalCount}}\n`);
   }
@@ -105,7 +106,46 @@ app.get("/test-stream", async (_req, reply) => {
     task.emitter.off("done", onDone);
     stream.end();
   });
+}
 
+app.get<{ Querystring: { id: string } }>("/attach-stream", async (req, reply) => {
+  const streamId = req.query.id;
+  if (!streamId) {
+    return reply.status(400).send({ error: "invalid id" });
+  }
+
+  const task = tasks[streamId];
+  if (!task) {
+    return reply.status(404).send({ error: "task not found" });
+  }
+
+  reply.header("transfer-encoding", "chunked");
+  reply.header("content-type", "application/ld+json");
+
+  const stream = new PassThrough({ highWaterMark: 128 });
+  reply.send(stream);
+
+  attachToStream(task, stream, reply);
+  return reply;
+});
+
+app.post<{ Querystring: { id: string } }>("/test-stream", async (req, reply) => {
+  const streamId = req.query.id;
+  if (!streamId) {
+    return reply.status(400).send({ error: "invalid id" });
+  }
+
+  const opName = `stream-${streamId.padStart(16, "0")}`; // we can make this from something like sha256_b64([arg1, arg2, ...].join())
+  const task = setupEmitter(opName);
+  console.log("Task:", task);
+
+  reply.header("transfer-encoding", "chunked");
+  reply.header("content-type", "application/ld+json");
+
+  const stream = new PassThrough({ highWaterMark: 128 });
+  reply.send(stream);
+
+  attachToStream(task, stream, reply);
   return reply;
 });
 

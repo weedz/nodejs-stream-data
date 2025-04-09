@@ -12,35 +12,57 @@
     <button type="button" id="start-stream-test">Test streaming data</button>
   </div>
   <div>
+    <p>Current stream: <span id="active-stream"></span></p>
     <p>Progress: <span id="progress-value">not started</span></p>
   </div>
+  <div>
+    <h2>Active streams</h2>
+    <ul id="active-streams"></ul>
+  </div>
   <script>
-    const progressText = document.getElementById("progress-value");
+    const activeStreamsEl = document.getElementById("active-streams");
 
-    const btn = document.getElementById("start-stream-test");
-    btn.addEventListener("click", async () => {
-      const res = await fetch("http://localhost:6969/test-stream");
-      console.log("Response:", res);
+    async function getActiveStreams() {
+      const activeStreams = await fetch("http://localhost:6969/active-streams").then(res => res.json());
+
+      const fragContainer = document.createDocumentFragment();
+      for (const stream of activeStreams) {
+        const streamLi = document.createElement("li");
+        streamLi.innerHTML = `<span>Task: <code>${stream.task}</code> (progress ${stream.progress}/${stream.totalCount})</span><button class="listen-on-stream" data-id="${stream.task}">Listen</button>`;
+        fragContainer.appendChild(streamLi);
+      }
+      activeStreamsEl.replaceChildren(fragContainer);
+    }
+    async function pollGetActiveStreams() {
+      await getActiveStreams();
+      setTimeout(pollGetActiveStreams, 5000);
+    }
+    pollGetActiveStreams();
+
+    const progressTextEl = document.getElementById("progress-value");
+    const activeStreamEl = document.getElementById("active-stream");
+    async function readStreamData(res, activeStreamId) {
+      activeStreamEl.textContent = activeStreamId;
 
       const decoder = new TextDecoder();
 
       for await (const chunk of res.body) {
         // console.log("Buffer:", chunk);
         const str = decoder.decode(chunk);
-        console.log("Chunk:", str);
+        // console.log("Chunk:", str);
         for (const row of str.split("\n").map(row => row.trim()).filter(Boolean)) {
-          console.log("Row:", row);
+          // console.log("Row:", row);
           try {
             const data = JSON.parse(row);
             if ("state" in data) {
-              console.log("State:", data.state);
+              // console.log("State:", data.state);
             }
             if ("totalCount" in data) {
-              console.log("Total count:", data.totalCount);
+              // console.log("Total count:", data.totalCount);
             }
             if ("progress" in data) {
-              console.log("progress:", data.progress);
-              progressText.textContent = data.progress;
+              // console.log("progress:", data.progress);
+              progressTextEl.textContent = data.progress;
             }
             if ("done" in data) {
               if (data.done === true) {
@@ -53,6 +75,46 @@
           }
         }
       }
+    }
+
+    let activeStream = null;
+
+    async function listenOnStream(streamId) {
+      if (activeStream) {
+        console.log("Aborted");
+        activeStream.abort();
+      }
+
+      const controller = new AbortController();
+      activeStream = controller;
+      const res = await fetch(`http://localhost:6969/attach-stream?id=${streamId}`, {signal: controller.signal});
+      readStreamData(res, streamId);
+    }
+
+    activeStreamsEl.addEventListener("click", e => {
+      const btn = e.target.closest("button.listen-on-stream");
+      if (!btn) {
+        return;
+      }
+
+      const streamId = btn.dataset.id;
+      listenOnStream(streamId);
+    });
+
+    const btn = document.getElementById("start-stream-test");
+    btn.addEventListener("click", async () => {
+      if (activeStream) {
+        console.log("Aborted");
+        activeStream.abort();
+      }
+
+      const controller = new AbortController();
+      activeStream = controller;
+
+      const streamId = Math.round(Math.random() * Number.MAX_SAFE_INTEGER);
+      const res = await fetch(`http://localhost:6969/test-stream?id=${streamId}`, {method: "POST", signal: controller.signal});
+
+      readStreamData(res, streamId);
     });
 
   </script>
